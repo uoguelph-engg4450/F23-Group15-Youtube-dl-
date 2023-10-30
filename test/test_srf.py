@@ -1,35 +1,49 @@
+#!/usr/bin/env python
 from __future__ import unicode_literals
+
+# Allow direct execution
 import os
-import shutil
+import sys
 import unittest
-import youtube_dl
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-class Testsrf(unittest.TestCase):
-    def setUp(self):
-        self.ydl_opts = {
-            'format': 'best',
-            'quiet': True,
-        }
-        self.temp_dir = 'temp'
-        os.makedirs(self.temp_dir, exist_ok=True)
+from test.helper import try_rm
 
-    def test_download_video(self):
-        url = 'https://www.srf.ch/audio/maloney/frohe-weihnachten?id=12304744'  # Replace with a valid srf News video URL
-        ydl = youtube_dl.YoutubeDL(self.ydl_opts)
-        result = ydl.extract_info(url, download=True)
 
-        self.assertTrue(result)
-        self.assertIn('entries', result)
-        self.assertEqual(len(result['entries']), 1)
+from youtube_dl import YoutubeDL
+from youtube_dl.utils import DownloadError
 
-        video_info = result['entries'][0]
-        self.assertIn('id', video_info)
-        self.assertIn('title', video_info)
-        self.assertIn('url', video_info)
-        self.assertTrue(video_info['url'].endswith('.mp4'))
+#test
+def _download_restricted(url, filename, age):
+    """ Returns true if the file has been downloaded """
 
-    def tearDown(self):
-        shutil.rmtree(self.temp_dir)
+    params = {
+        'age_limit': age,
+        'skip_download': True,
+        'writeinfojson': True,
+        'outtmpl': '%(id)s.%(ext)s',
+    }
+    ydl = YoutubeDL(params)
+    ydl.add_default_info_extractors()
+    json_filename = os.path.splitext(filename)[0] + '.info.json'
+    try_rm(json_filename)
+    try:
+        ydl.download([url])
+    except DownloadError:
+        try_rm(json_filename)
+    res = os.path.exists(json_filename)
+    try_rm(json_filename)
+    return res
+
+
+class TestAgeRestriction(unittest.TestCase):
+    def _assert_restricted(self, url, filename, age, old_age=None):
+        self.assertTrue(_download_restricted(url, filename, old_age))
+        self.assertFalse(_download_restricted(url, filename, age))
+
+    def test_SRF(self):
+        self._assert_restricted('https://www.srf.ch/audio/maloney/frohe-weihnachten?id=12304744', 'frohe-weihnachten.mp3', 0)
+
 
 if __name__ == '__main__':
     unittest.main()
