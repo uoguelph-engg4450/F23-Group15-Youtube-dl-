@@ -1,13 +1,10 @@
-# coding: utf-8
-from __future__ import unicode_literals
-
-import re
-
 from .common import InfoExtractor
 from ..utils import (
+    extract_attributes,
     ExtractorError,
     float_or_none,
     int_or_none,
+    join_nonempty,
     parse_iso8601,
     qualities,
     try_get,
@@ -82,11 +79,12 @@ class SRGSSRIE(InfoExtractor):
         return media_data
 
     def _real_extract(self, url):
-        bu, media_type, media_id = re.match(self._VALID_URL, url).groups()
+        bu, media_type, media_id = self._match_valid_url(url).groups()
         media_data = self._get_media_data(bu, media_type, media_id)
         title = media_data['title']
 
         formats = []
+        subtitles = {}
         q = qualities(['SD', 'HD'])
         for source in (media_data.get('resourceList') or []):
             format_url = source.get('url')
@@ -94,22 +92,22 @@ class SRGSSRIE(InfoExtractor):
                 continue
             protocol = source.get('protocol')
             quality = source.get('quality')
-            format_id = []
-            for e in (protocol, source.get('encoding'), quality):
-                if e:
-                    format_id.append(e)
-            format_id = '-'.join(format_id)
+            format_id = join_nonempty(protocol, source.get('encoding'), quality)
 
             if protocol in ('HDS', 'HLS'):
                 if source.get('tokenType') == 'AKAMAI':
                     format_url = self._get_tokenized_src(
                         format_url, media_id, format_id)
-                    formats.extend(self._extract_akamai_formats(
-                        format_url, media_id))
+                    fmts, subs = self._extract_akamai_formats_and_subtitles(
+                        format_url, media_id)
+                    formats.extend(fmts)
+                    subtitles = self._merge_subtitles(subtitles, subs)
                 elif protocol == 'HLS':
-                    formats.extend(self._extract_m3u8_formats(
+                    m3u8_fmts, m3u8_subs = self._extract_m3u8_formats_and_subtitles(
                         format_url, media_id, 'mp4', 'm3u8_native',
-                        m3u8_id=format_id, fatal=False))
+                        m3u8_id=format_id, fatal=False)
+                    formats.extend(m3u8_fmts)
+                    subtitles = self._merge_subtitles(subtitles, m3u8_subs)
             elif protocol in ('HTTP', 'HTTPS'):
                 formats.append({
                     'format_id': format_id,
@@ -131,9 +129,7 @@ class SRGSSRIE(InfoExtractor):
                     'url': podcast_url,
                     'quality': q(quality),
                 })
-        self._sort_formats(formats)
 
-        subtitles = {}
         if media_type == 'video':
             for sub in (media_data.get('subtitleList') or []):
                 sub_url = sub.get('url')
@@ -161,12 +157,18 @@ class SRGSSRPlayIE(InfoExtractor):
     _VALID_URL = r'''(?x)
                     https?://
                         (?:(?:www|play)\.)?
-                        (?P<bu>srf|rts|rsi|rtr|swissinfo)\.ch/play/(?:tv|radio)/
-                        (?:
-                            [^/]+/(?P<type>video|audio)/[^?]+|
-                            popup(?P<type_2>video|audio)player
-                        )
-                        \?.*?\b(?:id=|urn=urn:[^:]+:video:)(?P<id>[0-9a-f\-]{36}|\d+)
+                        (?P<bu>srf|rts|rsi|rtr|swissinfo)\.ch/
+                            (?:
+                                play/(?:tv|radio)/
+                                (?:
+                                    [^/]+/(?P<type>video|audio)/[^?]+|
+                                    popup(?P<type_2>video|audio)player
+                                )|
+                                (?:
+                                    (?P<type_3>video|audio)(?:/[^/]+)+/?
+                                )
+                            )
+                        \?.*?\b(?:(?:partId|id)=|urn=urn:[^:]+:video:)(?P<id>[0-9a-f\-]{36}|\d+)
                     '''
 
     _TESTS = [{
@@ -245,8 +247,14 @@ class SRGSSRPlayIE(InfoExtractor):
     }]
 
     def _real_extract(self, url):
-        mobj = re.match(self._VALID_URL, url)
+        mobj = self._match_valid_url(url)
         bu = mobj.group('bu')
-        media_type = mobj.group('type') or mobj.group('type_2')
+        media_type = mobj.group('type') or mobj.group('type_2') or mobj.group('type_3')
         media_id = mobj.group('id')
+        if mobj.group('type_3') and len(media_id) < 36:
+            webpage = self._download_webpage(url, media_id)
+            player = self._search_regex(r'''(<div\b[^>]+\bclass\s*=\s*('|")js-media\2[^>]*>)''', webpage, 'Media URN') or ''
+            player = extract_attributes(player)
+            urn = player.get('data-assetid') or ''
+            media_id = urn.rsplit(':', 1)[-1]
         return self.url_result('srgssr:%s:%s:%s' % (bu[:3], media_type, media_id), 'SRGSSR')
